@@ -85,6 +85,37 @@ def init_db():
         )
     ''')
     
+    # Savings challenge tasks table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS challenge_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            challenge_id INTEGER NOT NULL,
+            task_type TEXT NOT NULL,
+            task_description TEXT NOT NULL,
+            reward_amount REAL NOT NULL,
+            completed BOOLEAN DEFAULT 0,
+            completed_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    
+    # Savings challenges (mini-games)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS savings_challenges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            target_amount REAL NOT NULL,
+            current_amount REAL DEFAULT 0,
+            challenge_name TEXT NOT NULL,
+            difficulty TEXT NOT NULL,
+            status TEXT DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -420,6 +451,203 @@ def spend_money():
         'balance': new_balance,
         'amount': amount
     }), 200
+
+# ========== SAVINGS CHALLENGE MINIGAME ROUTES ==========
+
+@app.route('/api/challenge/create', methods=['POST'])
+def create_challenge():
+    """Create a new savings challenge"""
+    data = request.json
+    user_id = data.get('user_id')
+    target_amount = float(data.get('target_amount', 100))
+    challenge_name = data.get('challenge_name', 'New Challenge')
+    difficulty = data.get('difficulty', 'easy')  # easy, medium, hard
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO savings_challenges (user_id, target_amount, challenge_name, difficulty)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, target_amount, challenge_name, difficulty))
+    
+    conn.commit()
+    challenge_id = cursor.lastrowid
+    
+    # Generate tasks based on difficulty
+    tasks = generate_challenge_tasks(challenge_id, user_id, difficulty)
+    
+    conn.close()
+    
+    return jsonify({
+        'message': 'Challenge created successfully',
+        'challenge_id': challenge_id,
+        'target_amount': target_amount,
+        'tasks': tasks
+    }), 201
+
+@app.route('/api/challenge/<int:challenge_id>', methods=['GET'])
+def get_challenge(challenge_id):
+    """Get challenge details and tasks"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM savings_challenges WHERE id = ?
+    ''', (challenge_id,))
+    challenge = dict(cursor.fetchone() or {})
+    
+    cursor.execute('''
+        SELECT id, task_type, task_description, reward_amount, completed, completed_at
+        FROM challenge_tasks WHERE challenge_id = ?
+    ''', (challenge_id,))
+    
+    tasks = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return jsonify({'challenge': challenge, 'tasks': tasks}), 200
+
+@app.route('/api/challenge/complete-task', methods=['POST'])
+def complete_task():
+    """Mark a challenge task as completed and award money"""
+    data = request.json
+    task_id = data.get('task_id')
+    user_id = data.get('user_id')
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT challenge_id, reward_amount, completed FROM challenge_tasks WHERE id = ?
+    ''', (task_id,))
+    task = cursor.fetchone()
+    
+    if not task or task['completed']:
+        conn.close()
+        return jsonify({'error': 'Task already completed or not found'}), 400
+    
+    challenge_id = task['challenge_id']
+    reward_amount = task['reward_amount']
+    
+    # Mark task as complete
+    cursor.execute('''
+        UPDATE challenge_tasks 
+        SET completed = 1, completed_at = ? 
+        WHERE id = ?
+    ''', (datetime.now(), task_id))
+    
+    # Add money to wallet
+    cursor.execute('''
+        UPDATE users SET wallet_balance = wallet_balance + ? WHERE id = ?
+    ''', (reward_amount, user_id))
+    
+    # Update challenge progress
+    cursor.execute('''
+        UPDATE savings_challenges 
+        SET current_amount = current_amount + ? 
+        WHERE id = ?
+    ''', (reward_amount, challenge_id))
+    
+    # Record transaction
+    cursor.execute('''
+        INSERT INTO wallet_transactions (user_id, amount, transaction_type, reason)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, reward_amount, 'earned', f'Completed savings challenge task: {data.get("task_description", "")}'))
+    
+    conn.commit()
+    
+    # Get updated balance and challenge
+    cursor.execute('SELECT wallet_balance FROM users WHERE id = ?', (user_id,))
+    new_balance = cursor.fetchone()['wallet_balance']
+    
+    cursor.execute('''
+        SELECT current_amount, target_amount, status FROM savings_challenges WHERE id = ?
+    ''', (challenge_id,))
+    challenge_update = dict(cursor.fetchone())
+    
+    # Check if challenge completed
+    is_completed = challenge_update['current_amount'] >= challenge_update['target_amount']
+    if is_completed and challenge_update['status'] == 'active':
+        cursor.execute('''
+            UPDATE savings_challenges SET status = 'completed', completed_at = ? WHERE id = ?
+        ''', (datetime.now(), challenge_id))
+        conn.commit()
+    
+    conn.close()
+    
+    return jsonify({
+        'message': 'Task completed!',
+        'reward': reward_amount,
+        'wallet_balance': new_balance,
+        'challenge_progress': challenge_update['current_amount'],
+        'challenge_target': challenge_update['target_amount'],
+        'challenge_completed': is_completed
+    }), 200
+
+@app.route('/api/challenge/user/<int:user_id>', methods=['GET'])
+def get_user_challenges(user_id):
+    """Get all challenges for a user"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, challenge_name, target_amount, current_amount, difficulty, status, created_at
+        FROM savings_challenges 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC
+    ''', (user_id,))
+    
+    challenges = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return jsonify(challenges), 200
+
+def generate_challenge_tasks(challenge_id, user_id, difficulty):
+    """Generate tasks based on difficulty level"""
+    tasks_config = {
+        'easy': [
+            {'type': 'chore', 'description': 'Complete morning chores (make bed, brush teeth, etc.)', 'reward': 10},
+            {'type': 'learning', 'description': 'Read a financial article for 10 minutes', 'reward': 15},
+            {'type': 'exercise', 'description': 'Do 20 minutes of exercise or walk', 'reward': 12},
+            {'type': 'cleanup', 'description': 'Clean your room', 'reward': 20},
+            {'type': 'help', 'description': 'Help a family member with a task', 'reward': 15},
+        ],
+        'medium': [
+            {'type': 'project', 'description': 'Complete a small side project (design, code, etc.)', 'reward': 30},
+            {'type': 'study', 'description': 'Study for 1 hour on a financial topic', 'reward': 35},
+            {'type': 'cooking', 'description': 'Prepare a meal for family', 'reward': 25},
+            {'type': 'learn_skill', 'description': 'Learn and practice a new financial skill', 'reward': 40},
+            {'type': 'community', 'description': 'Volunteer or help in community', 'reward': 30},
+        ],
+        'hard': [
+            {'type': 'entrepreneurship', 'description': 'Start a small business/freelance gig', 'reward': 100},
+            {'type': 'advanced_learning', 'description': 'Complete an online financial course module', 'reward': 80},
+            {'type': 'research', 'description': 'Research and report on investment opportunities', 'reward': 75},
+            {'type': 'mentoring', 'description': 'Mentor someone about financial literacy', 'reward': 60},
+            {'type': 'project_launch', 'description': 'Launch a personal project or side hustle', 'reward': 90},
+        ]
+    }
+    
+    task_list = tasks_config.get(difficulty, tasks_config['easy'])
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    tasks = []
+    for task in task_list:
+        cursor.execute('''
+            INSERT INTO challenge_tasks (user_id, challenge_id, task_type, task_description, reward_amount)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, challenge_id, task['type'], task['description'], task['reward']))
+        tasks.append({
+            'task_type': task['type'],
+            'description': task['description'],
+            'reward': task['reward']
+        })
+    
+    conn.commit()
+    conn.close()
+    
+    return tasks
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
