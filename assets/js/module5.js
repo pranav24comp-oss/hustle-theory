@@ -1,6 +1,6 @@
-/* Module 5 - Financial Scams & Safety - Using relative API path (works with or without server) */
+/* Module 5 - Financial Scams & Safety - Using absolute API path for consistency */
 
-const API_URL = "/api";
+const API_URL = "http://localhost:5000/api";
 let step = 0;
 
 function updateProgress() {

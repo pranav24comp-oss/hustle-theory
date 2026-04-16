@@ -1,11 +1,14 @@
-/* Dashboard - Using relative API path (works with or without server) */
+/* Dashboard - Using absolute API path for consistency */
 
-const API_URL = "/api";
+const API_URL = "http://localhost:5000/api";
 let userId = localStorage.getItem("userId");
 let user = localStorage.getItem("loggedInUser");
 let completedModules = parseInt(
   localStorage.getItem("completedModules") || "0",
 );
+
+// Debug info
+console.log("Dashboard init - userId:", userId, "user:", user, "completedModules:", completedModules);
 
 // Check if user is logged in
 if (!user || !userId) {
@@ -26,19 +29,34 @@ function logout() {
 
 // Load user progress from server or localStorage
 async function loadProgress() {
+  console.log("loadProgress called with userId:", userId);
   try {
-    const response = await fetch(`${API_URL}/progress/${userId}`);
+    const endpoint = `${API_URL}/progress/${userId}`;
+    console.log("Fetching from:", endpoint);
+    const response = await fetch(endpoint);
+    console.log("Response status:", response.status);
+    
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status}`);
+    }
     const progressData = await response.json();
+    console.log("Progress data from server:", progressData);
 
-    // Calculate completed modules
-    completedModules = progressData.filter((p) => p.completed).length;
+    // Calculate completed modules - explicitly check for truthy values
+    completedModules = progressData.filter((p) => {
+      const isCompleted = p.completed === true || p.completed === 1 || p.completed === "1";
+      console.log(`Module ${p.module_id}: completed=${p.completed} (isCompleted: ${isCompleted})`);
+      return isCompleted;
+    }).length;
     localStorage.setItem("completedModules", completedModules);
+    console.log("Progress loaded from server:", completedModules, "modules completed");
   } catch (error) {
-    console.log("Server unavailable, using localStorage");
+    console.error("Error loading progress from server:", error);
     // Use localStorage if server is down
     completedModules = parseInt(
       localStorage.getItem("completedModules") || "0",
     );
+    console.log("Falling back to localStorage:", completedModules);
   }
 
   // Update progress bar

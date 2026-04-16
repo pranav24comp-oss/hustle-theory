@@ -231,7 +231,12 @@ def get_progress(user_id):
         ORDER BY module_id
     ''', (user_id,))
     
-    progress = [dict(row) for row in cursor.fetchall()]
+    progress = []
+    for row in cursor.fetchall():
+        row_dict = dict(row)
+        # Ensure completed is stored as a proper boolean
+        row_dict['completed'] = bool(row_dict['completed'])
+        progress.append(row_dict)
     conn.close()
     
     return jsonify(progress), 200
@@ -242,25 +247,32 @@ def update_progress():
     data = request.json
     user_id = data.get('user_id')
     module_id = data.get('module_id')
-    completed = data.get('completed', False)
+    # Ensure completed is stored as an integer (1 or 0) for SQLite
+    completed = 1 if data.get('completed', False) else 0
     score = data.get('score', 0)
+    
+    if not user_id or not module_id:
+        return jsonify({'error': 'user_id and module_id are required'}), 400
     
     conn = get_db()
     cursor = conn.cursor()
     
-    cursor.execute('''
-        INSERT INTO user_progress (user_id, module_id, completed, score, completed_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(user_id, module_id) 
-        DO UPDATE SET completed = ?, score = ?, completed_at = ?
-    ''', (user_id, module_id, completed, score, 
-          datetime.now() if completed else None,
-          completed, score, datetime.now() if completed else None))
-    
-    conn.commit()
-    conn.close()
-    
-    return jsonify({'message': 'Progress updated successfully'}), 200
+    try:
+        cursor.execute('''
+            INSERT INTO user_progress (user_id, module_id, completed, score, completed_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, module_id) 
+            DO UPDATE SET completed = ?, score = ?, completed_at = ?
+        ''', (user_id, module_id, completed, score, 
+              datetime.now() if completed else None,
+              completed, score, datetime.now() if completed else None))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Progress updated successfully'}), 200
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
 
 # ========== SAVINGS GOALS ROUTES ==========
 

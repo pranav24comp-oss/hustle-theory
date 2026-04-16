@@ -146,7 +146,7 @@ function unlockNext() {
 }
 
 function completeModule() {
-  const API_URL = "/api";
+  const API_URL = "http://localhost:5000/api";
   const userId = localStorage.getItem("userId");
 
   // Update completed modules in localStorage first

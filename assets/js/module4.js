@@ -1,6 +1,6 @@
-/* Module 4 - Taxes - Using relative API path (works with or without server) */
+/* Module 4 - Taxes - Using absolute API path for consistency */
 
-const API_URL = "/api";
+const API_URL = "http://localhost:5000/api";
 let step = 0;
 
 function updateProgress() {
